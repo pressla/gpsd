@@ -868,6 +868,8 @@ static gps_mask_t processGPZDA(int c UNUSED, char *field[],
     return mask;
 }
 
+extern float HDGboat;
+
 static gps_mask_t processHDG(int c UNUSED, char *field[],
     struct gps_device_t *session)
 {
@@ -894,6 +896,7 @@ static gps_mask_t processHDG(int c UNUSED, char *field[],
 
     session->gpsdata.navigation.set        |= NAV_HDG_MAGN_PSET;
     session->gpsdata.navigation.heading[compass_magnetic] = safe_atof(field[1]);
+    HDGboat = session->gpsdata.navigation.heading[compass_magnetic];
 
     session->gpsdata.environment.set       |= ENV_DEVIATION_PSET;
     session->gpsdata.environment.deviation = safe_atof(field[2]);
@@ -906,6 +909,11 @@ static gps_mask_t processHDG(int c UNUSED, char *field[],
         session->gpsdata.environment.variation -= session->gpsdata.environment.variation;
 
     mask |= (NAVIGATION_SET | ENVIRONMENT_SET);
+
+    gpsd_report(session->context->debug, LOG_RAW,
+		"HDG/heading %lf.\n",
+		
+		session->gpsdata.navigation.heading[compass_magnetic]);
 
     return mask;
 }

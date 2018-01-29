@@ -3,8 +3,8 @@
 # License: GPL 2.0
 
 
-
-import time,microclient
+from microclient import *
+import time
 
 
 class GpsPoller(gpscommon):
@@ -46,7 +46,7 @@ def getOps():
 
     (options, arguments) = getopt.getopt(sys.argv[1:], "v")
     streaming = False
-    verbose = 2
+    verbose = 0
     for (switch, val) in options:
         if switch == '-v':
             verbose = 2
@@ -73,6 +73,8 @@ if __name__ == '__main__':
         TEMPmtop=0
         ROLLmtop=0
         PTCHmtop=0
+        AWAboat = 0
+        HDGboat = 0
 
         while True:
             #os.system('clear')
@@ -80,11 +82,12 @@ if __name__ == '__main__':
             if len(strres) > 1:
 
                 cmd = strres.split(",")
-                if (cmd[0]=="$IIMWV") & (cmd[2]=="R"):
-                    AWAmtop = float(cmd[1])
+                if (cmd[0]=="$CCMWV") & (cmd[2]=="R"):
+                    AWAboat = float(cmd[1])
                     AWSmtop = float(cmd[3])
-                elif (cmd[0] == "$HCHDM"):
+                elif (cmd[0] == "$CCHDX"):
                     HDMmtop = float(cmd[1])
+                    #AWAmtop = float(cmd[2])
                 elif (cmd[0] == "$IIXDR"):
                     if (cmd[4][:4]=="PTCH"):
                         PTCHmtop = float(cmd[2])
@@ -92,14 +95,19 @@ if __name__ == '__main__':
                         ROLLmtop = float(cmd[2])
                 elif (cmd[0] == "$IIMTA"):
                     TEMPmtop = float(cmd[1])
+                elif (cmd[0] == "$GPHDG"):
+                    HDGboat = float(cmd[1])
 
                 else:
                     print ("tranche: ",cmd)
 
                 print ("------------------------------")
-                print ("AWAmtop:\t",AWAmtop)
-                print ("AWSmtop:\t",AWSmtop)
+                #print ("AWAmtop:\t",AWAmtop)
+                print ("AWAboat:\t",AWAboat)
                 print ("HDMmtop:\t",HDMmtop)
+                print ("HDGboat:\t",HDGboat)
+
+                print ("AWSmtop:\t",AWSmtop)
                 print ("ROLLmtop:\t",ROLLmtop)
                 print ("PTCHmtop:\t",PTCHmtop)
                 time.sleep(0.1)

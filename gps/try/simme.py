@@ -25,7 +25,7 @@ class simme:
 
     def feed(self):
         "Feed a line from the contents of the GPS log to the daemon."
-        line = "$CCMWV,5,T,0.0,N,A"
+        line = "$GPHDG,20,0,E,0,E"
         line=line+self.add_checksum(line)+"\r\n"
         time.sleep(int(self.delay))
         # self.write has to be set by the derived class

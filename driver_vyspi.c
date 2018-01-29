@@ -51,6 +51,8 @@
 #define PKG_TYPE_NMEA2000 0x02
 #define PKG_TYPE_ST       0x04
 
+float HDGboat=0,HDGmast=0,AWAmast=0,AWAboat=0;
+
 uint32_t vy_port_speeds[] = {
   PORT_SPEED_4800,
   PORT_SPEED_38400,
@@ -2457,6 +2459,8 @@ static gps_mask_t hnd_127250(unsigned char *bu, int len, struct PGN *pgn, struct
         session->gpsdata.navigation.heading[compass_true] = NAN;
     }
 
+    HDGboat = session->gpsdata.navigation.heading[compass_magnetic];
+
     gpsd_report(session->context->debug, LOG_DATA,
 		"pgn %6d(%3d):\n", pgn->pgn, session->driver.nmea2000.unit);
 
@@ -3062,6 +3066,7 @@ static gps_mask_t hnd_130306(unsigned char *bu, int len, struct PGN *pgn, struct
     According to
 
     http://www.maretron.com/support/manuals/USB100UM_1.6.pdf
+
 
     0 - 1 are translated to MWD and 2 - 4 to MWV:
 
@@ -4179,6 +4184,116 @@ static ssize_t vyspi_get(struct gps_device_t *session)
   */
 }
 
+static bool vyspi_filter_serial_input(char *str, struct gps_device_t *session) {
+  	struct gps_packet_t * lexer = &session->packet;
+	bool changed=false;
+	char conv[128], cstr[128];
+	char argh[20][32];
+	const char s[2] = ",";  //delimiter
+
+	/* There are two NMEA 0183 measurements connected to one of the serial inputs of the vyacht, delivering two relevant signals
+	$IIMWV Apparent wind angle of the masttop + windspeed
+	$HCHDM Magnetic bearing of the masttop windmeter
+
+	The compass signal would conflict with the boat compass signal and is converted in a non existin message $CCHDX, it is not needed to be seen on the N2K bus
+	it is used together with the main boat HDG from N2k bus to calculate the mast differential angle
+	
+	The measured AWA is wrong by the delta angle, and gets corrected and the message is altered to a valid $CCMWV message which will be sent to the N2k bus
+	both messages are sent then to the nmea parser as usual, gets sent out to UDP in their corrected or filtered form
+	*/
+
+	if (strncmp("$HCHDM", str, 6) == 0) {		    //measured HDG is assumed to be masttop, extract HDGmast, and replace whole sentence by a non existing = $CCHDX
+							    /*
+							      === HDM - Heading Magnetic ===
+
+							      $--HDM,x.x,T*hh<CR><LF>
+
+							      0. Heading Magnetic
+							      1. T = True
+							      2. Checksum
+							    */
+	  	gpsd_report(session->context->debug, LOG_IO, "DEFER: %s\n", str);
+
+   		char *token;
+		strcpy(cstr,str); //keep the original safe   
+
+   		/* get the first token */
+   		token = strtok(cstr, s);
+   		int i=0;
+   		/* walk through other tokens */
+   		while( token != NULL ) {
+    			strcpy(argh[i],token);
+			if (i==1) {
+				HDGmast = atof(argh[i]);
+				gpsd_report(session->context->debug, LOG_IO, "CORR: HDGboat=%.0f, HDGmast=%.0f, AWAmast=%.0f, AWAboat=%.0f\n",HDGboat,HDGmast,AWAmast,AWAboat);
+			}
+      			token = strtok(NULL, s);
+			i++;
+   		}
+		sprintf(conv,"$CCHDX,%.0f,%s,A",HDGmast,argh[2]);		
+		nmea_add_checksum(conv);
+		strcpy(str,conv);
+		gpsd_report(session->context->debug, LOG_IO, "DEFMXX: %s\n",str);
+		changed = true;
+
+
+	} else if (strncmp("$IIMWV", str, 6) == 0) {	//measured MWV is assumed to be masttop, extract AWAmast, calculate AWAboat and replace whole sentence by a calculated MWV = $CCMWV
+
+							/*
+							=== MWV - Wind Speed and Angle ===
+
+							------------------------------------------------------------------------------
+								1   2 3   4 5
+								|   | |   | |
+							 $--MWV,x.x,a,x.x,a,a*hh<CR><LF>
+							------------------------------------------------------------------------------
+
+							Field Number:
+
+							1. Wind Angle, 0 to 360 degrees
+							2. Reference, R = Relative, T = True
+							3. Wind Speed
+							4. Wind Speed Units, K/M/N
+							5. Status, A = Data Valid
+							6. Checksum
+							 */
+
+          	gpsd_report(session->context->debug, LOG_IO, "DEFER: %s\n",str);
+
+   		char *token;
+		strcpy(cstr,str); //keep the original safe   
+
+   		/* get the first token */
+   		token = strtok(cstr, s);
+   		int i=0;
+   		/* walk through other tokens */
+   		while( token != NULL ) {
+    			strcpy(argh[i],token);
+			if (i==1) {
+				AWAmast = atof(argh[i]);			//first argument is apparent wind angle (measured at masttop)
+				
+				
+				if (isnan(HDGboat)) HDGboat = 0;		//if boat heading is missing, we asume zero			
+				float dAmast = HDGmast-HDGboat;	
+				if (dAmast<-180) dAmast = 360 + dAmast;		//delta Angle Mast to boat is -60<x<60 typical. If delta is crossing 0 degree, correct.
+
+				AWAboat = AWAmast+dAmast;				
+				if (AWAboat<0) AWAboat = 360 + AWAboat;		//there is no negative bearing
+				if (AWAboat>360) AWAboat = AWAboat - 360; 	//and nothing above 360 is real
+				gpsd_report(session->context->debug, LOG_IO, "CORR: HDGboat=%.0f, HDGmast=%.0f, AWAmast=%.0f, AWAboat=%.0f, dAmast=%.0f\n",HDGboat,HDGmast,AWAmast,AWAboat,dAmast);
+			}
+      			token = strtok(NULL, s);
+			i++;
+   		}
+		sprintf(conv,"$CCMWV,%.0f,%s,%s,%s,A",AWAboat,argh[2],argh[3],argh[4]);		
+		nmea_add_checksum(conv);
+		strcpy(str,conv);
+		gpsd_report(session->context->debug, LOG_IO, "DEFMXX: %s\n",str);
+		changed = true;
+	}
+	return changed;
+}
+
 /*@-mustfreeonly@*/
 static gps_mask_t vyspi_parse_serial_input(struct gps_device_t *session)
 {
@@ -4187,6 +4302,7 @@ static gps_mask_t vyspi_parse_serial_input(struct gps_device_t *session)
   uint8_t ct = 0;
 
   struct PGN *work = NULL;
+  char sbuf[128];
 
   static char * typeNames [] = {
       "COMMAND", "NMEA0183", "NMEA2000", "SEATALK", "AIS", "UNKOWN"
@@ -4199,7 +4315,7 @@ static gps_mask_t vyspi_parse_serial_input(struct gps_device_t *session)
 
   for(ct = 0; ct < lexer->out_count; ct++) {
 
-      gpsd_report(session->context->debug, LOG_DATA, "VYSPI: type= %s, len= %u\n",
+      gpsd_report(session->context->debug, LOG_DATA, "VYSPI:[%d] type= %s, len= %u\n",ct,
                   (lexer->out_type[ct] < FRM_TYPE_MAX)
                   ? typeNames[lexer->out_type[ct]] : typeNames[FRM_TYPE_MAX],
                   lexer->out_len[ct]);
@@ -4262,13 +4378,28 @@ static gps_mask_t vyspi_parse_serial_input(struct gps_device_t *session)
 
       } else if (lexer->out_type[ct] == FRM_TYPE_NMEA0183) {
 
-          gpsd_report(session->context->debug, LOG_IO, "<= GPS: %s\n",
-                      lexer->outbuffer + lexer->out_offset[ct]);
+	strcpy(sbuf,(char *)lexer->outbuffer + lexer->out_offset[ct]);	//keep copy
+	if (vyspi_filter_serial_input(sbuf, session)) {			//ok, changed the sentence
+		if (strlen(sbuf) <= lexer->out_len[ct]) {
+			lexer->out_len[ct] = strlen(sbuf);
+		} else {
+			gpsd_report(session->context->debug, LOG_IO, "DEFER: NewLen=%d, Len=%d, %s\n",strlen(sbuf),lexer->out_len[ct],sbuf);			
+			lexer->out_len[ct] = (size_t) strlen(sbuf);
+			//lexer->out_count = ct;	
+			
+			//skip the rest if new sentence is longer than original
+		}
+		strcpy((char *)lexer->outbuffer + lexer->out_offset[ct], sbuf);
 
-          mask |= nmea_parse_len((char *)lexer->outbuffer + lexer->out_offset[ct],
-                                 lexer->out_len[ct],
-                                 session);
+	}
+	//*****************
 
+        gpsd_report(session->context->debug, LOG_IO, "PARSE: %s\n",
+              lexer->outbuffer + lexer->out_offset[ct]);
+  	mask |= nmea_parse_len((char *)lexer->outbuffer + lexer->out_offset[ct],
+                         lexer->out_len[ct],
+                         session);
+		
       } else if (lexer->out_type[ct] == FRM_TYPE_AIS) {
 
           // TODO - handle multiple AIS sentences in one sentence
@@ -4318,6 +4449,7 @@ static gps_mask_t vyspi_parse_serial_input(struct gps_device_t *session)
 
   // calling it here - just to make sure we are not missing a beat
   // vyspi_handle_time_trigger(session);
+
 
   return mask;
 }
